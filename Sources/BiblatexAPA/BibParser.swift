@@ -12,6 +12,14 @@ public struct BibEntry: Equatable {
     public let rawText: String     // original text for lossless round-tripping
     public let lineNumber: Int     // 1-based line number in file
 
+    public init(entryType: String, key: String, fields: OrderedDict, rawText: String, lineNumber: Int) {
+        self.entryType = entryType
+        self.key = key
+        self.fields = fields
+        self.rawText = rawText
+        self.lineNumber = lineNumber
+    }
+
     public var title: String? { fields.caseInsensitiveValue(forKey: "TITLE") }
     public var date: String? { fields.caseInsensitiveValue(forKey: "DATE") }
     public var doi: String? { fields.caseInsensitiveValue(forKey: "DOI") }
@@ -26,6 +34,8 @@ public struct BibEntry: Equatable {
 public struct OrderedDict: Equatable {
     public private(set) var keys: [String] = []
     public private(set) var values: [String: String] = [:]
+
+    public init() {}
 
     public subscript(key: String) -> String? {
         get { values[key] }
