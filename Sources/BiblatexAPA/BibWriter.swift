@@ -10,7 +10,8 @@ public struct BibWriter {
         var lines: [String] = []
         lines.append("@\(entry.entryType.uppercased()){\(entry.key),")
         for pair in entry.fields.pairs {
-            let value = needsBraces(pair.value) ? "{\(pair.value)}" : pair.value
+            let safe = braceSafe(pair.value)
+            let value = needsBraces(safe) ? "{\(safe)}" : safe
             lines.append("\(indent)\(pair.key.uppercased()) = \(value),")
         }
         lines.append("}")
@@ -102,6 +103,41 @@ public struct BibWriter {
     }
 
     // MARK: - Helpers
+
+    /// Escape braces **only when they are unbalanced**.
+    ///
+    /// A field value is emitted as `{value}`. If `value` itself contains an
+    /// unbalanced `}`, it closes the field early and everything after it is
+    /// parsed as bibtex syntax — a value can therefore inject an entire
+    /// fabricated entry:
+    ///
+    ///     title = ok},\n}\n@ARTICLE{forged2099,\n  TITLE = {I am fake
+    ///
+    /// produces a `forged2099` entry that never existed. Downstream (a LaTeX
+    /// build, a reference manager, or an LLM reading the export) cannot tell it
+    /// apart from a real one.
+    ///
+    /// **Balanced braces pass through untouched.** They are legitimate and
+    /// common: biblatex uses `{...}` inside values to protect capitalisation,
+    /// and Zotero emits them routinely (`{DNA} sequencing`). Escaping those
+    /// would change the rendered output of every such record, so the rule is
+    /// narrower: escape only if the value's braces do not form a well-nested,
+    /// balanced structure — in which case the value was never valid brace
+    /// syntax to begin with and nothing legitimate is lost.
+    static func braceSafe(_ value: String) -> String {
+        var depth = 0
+        for ch in value {
+            if ch == "{" { depth += 1 }
+            if ch == "}" {
+                depth -= 1
+                if depth < 0 { break }   // closes more than it opens
+            }
+        }
+        guard depth != 0 else { return value }
+        return value
+            .replacingOccurrences(of: "{", with: "\\{")
+            .replacingOccurrences(of: "}", with: "\\}")
+    }
 
     private static func needsBraces(_ value: String) -> Bool {
         // Numeric values don't need braces
