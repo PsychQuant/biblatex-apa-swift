@@ -124,6 +124,34 @@ public struct BibWriter {
     /// narrower: escape only if the value's braces do not form a well-nested,
     /// balanced structure — in which case the value was never valid brace
     /// syntax to begin with and nothing legitimate is lost.
+    ///
+    /// ## `\}` is not an escape — measured, not assumed
+    ///
+    /// The first version of this fix emitted `\{` / `\}`. **btparse (the parser
+    /// behind biber, and BibTeX proper) counts braces without regard to
+    /// backslashes**, so `\}` still closes the field. Real `biber --tool` on the
+    /// three forms, same injection payload:
+    ///
+    /// | emitted as | biber |
+    /// |---|---|
+    /// | unescaped | 2 entries — the fabricated one is indistinguishable |
+    /// | `\}` | **syntax error**; the genuine entry is lost with it |
+    /// | `\textbraceright{}` | 1 entry, payload preserved as text, no error |
+    ///
+    /// So `\}` blocked the forgery only by corrupting the file into a parse
+    /// failure — one bad record took the whole bibliography down with it.
+    ///
+    /// The replacements below are each `{`+`}` **balanced**, so the emitted
+    /// value cannot leave its own field no matter what it contains. That is a
+    /// structural property, not a claim about any one parser's escape rules.
+    ///
+    /// The same measurement is why the depth counter must **not** skip
+    /// backslash-escaped braces: it is modelling btparse's own counting, and
+    /// btparse does not skip them either.
+    ///
+    /// Substitution is a single pass. Doing it as three sequential
+    /// `replacingOccurrences` calls would re-escape the braces this function
+    /// itself introduces.
     static func braceSafe(_ value: String) -> String {
         var depth = 0
         for ch in value {
@@ -134,9 +162,18 @@ public struct BibWriter {
             }
         }
         guard depth != 0 else { return value }
-        return value
-            .replacingOccurrences(of: "{", with: "\\{")
-            .replacingOccurrences(of: "}", with: "\\}")
+
+        var out = ""
+        out.reserveCapacity(value.count + 32)
+        for ch in value {
+            switch ch {
+            case "{":  out += "\\textbraceleft{}"
+            case "}":  out += "\\textbraceright{}"
+            case "\\": out += "\\textbackslash{}"
+            default:   out.append(ch)
+            }
+        }
+        return out
     }
 
     private static func needsBraces(_ value: String) -> Bool {
