@@ -10,7 +10,8 @@ public struct BibWriter {
         var lines: [String] = []
         lines.append("@\(entry.entryType.uppercased()){\(entry.key),")
         for pair in entry.fields.pairs {
-            let value = needsBraces(pair.value) ? "{\(pair.value)}" : pair.value
+            let safe = braceSafe(pair.value)
+            let value = needsBraces(safe) ? "{\(safe)}" : safe
             lines.append("\(indent)\(pair.key.uppercased()) = \(value),")
         }
         lines.append("}")
@@ -102,6 +103,78 @@ public struct BibWriter {
     }
 
     // MARK: - Helpers
+
+    /// Escape braces **only when they are unbalanced**.
+    ///
+    /// A field value is emitted as `{value}`. If `value` itself contains an
+    /// unbalanced `}`, it closes the field early and everything after it is
+    /// parsed as bibtex syntax — a value can therefore inject an entire
+    /// fabricated entry:
+    ///
+    ///     title = ok},\n}\n@ARTICLE{forged2099,\n  TITLE = {I am fake
+    ///
+    /// produces a `forged2099` entry that never existed. Downstream (a LaTeX
+    /// build, a reference manager, or an LLM reading the export) cannot tell it
+    /// apart from a real one.
+    ///
+    /// **Balanced braces pass through untouched.** They are legitimate and
+    /// common: biblatex uses `{...}` inside values to protect capitalisation,
+    /// and Zotero emits them routinely (`{DNA} sequencing`). Escaping those
+    /// would change the rendered output of every such record, so the rule is
+    /// narrower: escape only if the value's braces do not form a well-nested,
+    /// balanced structure — in which case the value was never valid brace
+    /// syntax to begin with and nothing legitimate is lost.
+    ///
+    /// ## `\}` is not an escape — measured, not assumed
+    ///
+    /// The first version of this fix emitted `\{` / `\}`. **btparse (the parser
+    /// behind biber, and BibTeX proper) counts braces without regard to
+    /// backslashes**, so `\}` still closes the field. Real `biber --tool` on the
+    /// three forms, same injection payload:
+    ///
+    /// | emitted as | biber |
+    /// |---|---|
+    /// | unescaped | 2 entries — the fabricated one is indistinguishable |
+    /// | `\}` | **syntax error**; the genuine entry is lost with it |
+    /// | `\textbraceright{}` | 1 entry, payload preserved as text, no error |
+    ///
+    /// So `\}` blocked the forgery only by corrupting the file into a parse
+    /// failure — one bad record took the whole bibliography down with it.
+    ///
+    /// The replacements below are each `{`+`}` **balanced**, so the emitted
+    /// value cannot leave its own field no matter what it contains. That is a
+    /// structural property, not a claim about any one parser's escape rules.
+    ///
+    /// The same measurement is why the depth counter must **not** skip
+    /// backslash-escaped braces: it is modelling btparse's own counting, and
+    /// btparse does not skip them either.
+    ///
+    /// Substitution is a single pass. Doing it as three sequential
+    /// `replacingOccurrences` calls would re-escape the braces this function
+    /// itself introduces.
+    static func braceSafe(_ value: String) -> String {
+        var depth = 0
+        for ch in value {
+            if ch == "{" { depth += 1 }
+            if ch == "}" {
+                depth -= 1
+                if depth < 0 { break }   // closes more than it opens
+            }
+        }
+        guard depth != 0 else { return value }
+
+        var out = ""
+        out.reserveCapacity(value.count + 32)
+        for ch in value {
+            switch ch {
+            case "{":  out += "\\textbraceleft{}"
+            case "}":  out += "\\textbraceright{}"
+            case "\\": out += "\\textbackslash{}"
+            default:   out.append(ch)
+            }
+        }
+        return out
+    }
 
     private static func needsBraces(_ value: String) -> Bool {
         // Numeric values don't need braces
